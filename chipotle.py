@@ -24,14 +24,16 @@
 ### Importing libraries
 ##############################################
 import pandas as pd
-import numpy as np
-import seaborn as sns
-import matplotlib.pyplot as plt
 pd.set_option('display.max_columns', None)
-pd.set_option('display.width' , 500)
-pd.set_option('display.float_format', lambda x: '%.2f' % x)
+pd.set_option('display.max_rows', None)
+pd.set_option('display.width', 500)
+pd.set_option('display.max_colwidth', None)
+pd.set_option('display.expand_frame_repr', False)
+from mlxtend.frequent_patterns import apriori, association_rules
+
 
 df = pd.read_csv('/Users/handeatasagun/Documents/GitHub/Chipotle_Data_Analysis/chipotle.csv')
+df.head(20)
 
 ### Data understanding
 ##############################################
@@ -57,7 +59,7 @@ df['item_price'] = df['item_price'].astype(float)
 
 ### Replace non-alphanumeric characters in the 'item_name' column
 df['item_name'].unique()
-df['item_name'] = df['item_name'].str.replace('\W+', '_')
+df['item_name'] = df['item_name'].str.replace(r'\W+', '_', regex=True)
 df.head()
 
 ###############################################################
@@ -92,7 +94,7 @@ sorted_df[['item_name', 'price_per_item']]
 df['item_name'].value_counts()
 
 # How many times has the item 'Chicken Bowl' been ordered?"
-df_cb = df[df['item_name'] == 'Chicken Bowl']
+df_cb = df[df['item_name'] == 'Chicken_Bowl']
 len(df_cb)
 
 # How many orders have been placed for the item 'Chicken Bowl'?
@@ -103,39 +105,80 @@ can_bev = df[(df['item_name'].str.contains('Canned')) & (df['quantity'] > 1)]
 len(can_bev)
 
 # How many products contain chicken?
-chicken = df[df['item_name'].str.contains('Chicken')]
+chicken = sorted_df[df['item_name'].str.contains('Chicken')]
 len(chicken)
 
 # Which are the top 5 products sold by quantity?
-df.pivot_table('quantity', 'item_name', aggfunc= 'sum').sort_values(by= 'quantity', ascending=False).head()
+df.pivot_table('quantity', 'item_name', aggfunc= 'sum').\
+    sort_values(by= 'quantity', ascending=False).head()
 # df.pivot_table('quantity', 'item_name', aggfunc= 'sum').nlargest(5, 'quantity')
+
 
 ##############################################################
 ## 3. Market Basket Analysis
 ##############################################################
-from mlxtend.preprocessing import TransactionEncoder
-from mlxtend.frequent_patterns import apriori, association_rules
+def create_invoice_product_df(dataframe):
+    """
+    Creates an invoice-product matrix from the given dataframe.
 
-### Group the data by orders and concatenate the items
-grouped_df = df.groupby('order_id')['item_name'].apply(list).reset_index()
+    Parameters:
+        dataframe (DataFrame): The original dataframe containing order and item information.
 
-### Convert the dataset using TransactionEncoder
-te = TransactionEncoder()
-te_ary = te.fit_transform(grouped_df['item_name'])
-df_encoded = pd.DataFrame(te_ary, columns=te.columns_)
+    Returns:
+        DataFrame: An invoice-product matrix where each row represents an order and each column represents a product,
+        with 1 indicating the product is in the order and 0 otherwise.
+    """
+    return dataframe.groupby(['order_id', 'item_name'])['quantity'].sum().\
+        unstack().fillna(0).applymap(lambda x: 1 if x > 0 else 0)
 
-### Find frequent itemsets
-frequent_itemsets = apriori(df_encoded, min_support=0.1, use_colnames=True)
+create_invoice_product_df(df)
 
-### Extract association rules
-if frequent_itemsets.empty:
-    print("No frequent itemsets found.")
-else:
-    rules = association_rules(frequent_itemsets, metric="confidence", min_threshold=0.5)
+def create_rules(dataframe):
+    """
+    Generates association rules using the Apriori algorithm.
 
-    if rules.empty:
-        print("No association rules found.")
-    else:
-        print(rules)
+    Parameters:
+        dataframe (DataFrame): The dataframe containing the invoice-product matrix.
 
-# NO ASSOCIATION RULES FOUND.
+    Returns:
+        DataFrame: Association rules containing antecedents, consequents, support, confidence, lift, etc.
+    """
+    dataframe = create_invoice_product_df(dataframe)
+    frequent_itemsets = apriori(dataframe, min_support=0.01, use_colnames=True)
+    rules = association_rules(frequent_itemsets, metric="support", min_threshold=0.01)
+    return rules
+
+create_rules(df)
+
+def arl_recommender(rules_df, product_name, rec_count=1):
+    """
+    Recommends products based on association rules.
+
+    Parameters:
+        rules_df (DataFrame): The association rules dataframe containing antecedents, consequents, lift, etc.
+        product_name (str): The name of the product for which recommendations are needed.
+        rec_count (int, optional): The number of recommendations to return. Defaults to 1.
+
+    Returns:
+        list: A list of recommended product names.
+    """
+    sorted_rules = rules_df.sort_values("lift", ascending=False)
+    recommendation_list = []
+    seen_products = set()
+
+    for i, product in enumerate(sorted_rules["antecedents"]):
+        for j in list(product):
+            if j == product_name:
+                consequents = list(sorted_rules.iloc[i]["consequents"])
+                for consequent in consequents:
+                    if consequent not in seen_products and consequent != product_name:
+                        recommendation_list.append(consequent)
+                        seen_products.add(consequent)
+
+    return recommendation_list[:rec_count]
+
+
+## ARL Recommender - 3 recommendations for 'Chicken Bowl' product
+recommended_products = arl_recommender(rules, 'Chicken Bowl', 3)
+print(recommended_products)
+
